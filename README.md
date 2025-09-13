@@ -1263,4 +1263,5 @@ python test_app.py
   <p>If this project helped you, please ⭐ <strong>star the repository</strong> to support our work!</p>
   
   **Made in 🇮🇳 India with 💫 Innovation & 🔥 Passion**
-</div>
+</div>#   F i n T e c h  
+ 
