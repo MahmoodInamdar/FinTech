@@ -19,12 +19,14 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-# Import our custom agents (will be created)
+# Import our custom agents
 from agents.data_agent import DataAnalysisAgent
 from agents.meta_prompt_agent import MetaPromptAgent
 from agents.visualization_agent import VisualizationAgent
 from agents.code_execution_agent import CodeExecutionAgent
 from agents.coordinator import AgentCoordinator
+# Import new 2-model system
+from agents.two_model_coordinator import TwoModelCoordinator
 
 # Page configuration
 st.set_page_config(
@@ -108,13 +110,20 @@ st.markdown('''
 class DataApp:
     def __init__(self):
         self.coordinator = None
+        self.two_model_system = None  # New 2-model system
         self.current_data = None
         self.current_operation = ""
         self.suggestions = []
+        self.use_two_model_system = True  # Flag to switch between systems
+        self.use_powerbi_mode = False    # Flag for Power BI style visualizations
 
     def initialize_agents(self, openai_api_key: str):
-        """Initialize the multi-agent system"""
+        """Initialize both the multi-agent system and 2-model system"""
+        # Original multi-agent system
         self.coordinator = AgentCoordinator(openai_api_key)
+
+        # New 2-model system
+        self.two_model_system = TwoModelCoordinator(openai_api_key)
 
     def render_header(self):
         """Render the main header"""
@@ -146,6 +155,18 @@ class DataApp:
 
             st.divider()
 
+            # System selector
+            st.header("🤖 AI System")
+            system_choice = st.radio(
+                "Choose your analysis system:",
+                ["🧠 2-Model Analyst Chatbot", "📊 Power BI Style Visualizations", "⚙️ Traditional Multi-Agent System"],
+                help="Choose between conversational AI, direct visualization, or traditional workflow"
+            )
+            self.use_two_model_system = "2-Model" in system_choice
+            self.use_powerbi_mode = "Power BI" in system_choice
+
+            st.divider()
+
             # File upload
             st.header("📁 Data Upload")
             uploaded_file = st.file_uploader(
@@ -164,13 +185,27 @@ class DataApp:
             return uploaded_file
 
     def load_data(self, uploaded_file):
-        """Load data from uploaded file"""
+        """Load data from uploaded file and initialize appropriate system"""
         try:
             self.current_data = pd.read_csv(uploaded_file)
             # Clean data for Arrow compatibility
             self.current_data = self.clean_dataframe_for_display(self.current_data)
             st.session_state.data = self.current_data
+
+            # Initialize the 2-model system with the data
+            if self.use_two_model_system and self.two_model_system:
+                with st.sidebar:
+                    with st.spinner("🔍 Model 2: Analyzing data structure..."):
+                        load_result = self.two_model_system.load_data(self.current_data)
+
+                    if load_result['success']:
+                        st.success(f"✅ Data analyzed by AI: {load_result['data_shape']}")
+                        st.info("💬 Ready for data analyst conversation!")
+                    else:
+                        st.error(f"❌ 2-Model system error: {load_result['error']}")
+
             st.sidebar.success(f"✅ Data loaded: {len(self.current_data)} rows, {len(self.current_data.columns)} columns")
+
         except Exception as e:
             st.sidebar.error(f"❌ Error loading data: {e}")
 
@@ -219,6 +254,17 @@ class DataApp:
 
         self.current_data = self.clean_dataframe_for_display(sample_data)
         st.session_state.data = self.current_data
+
+        # Initialize the 2-model system with sample data
+        if self.use_two_model_system and self.two_model_system:
+            with st.sidebar:
+                with st.spinner("🔍 Model 2: Analyzing sample data..."):
+                    load_result = self.two_model_system.load_data(self.current_data)
+
+                if load_result['success']:
+                    st.success(f"✅ Sample data analyzed: {load_result['data_shape']}")
+                    st.info("💬 Ready for data analyst conversation!")
+
         st.sidebar.success(f"✅ Sample data loaded: {len(self.current_data)} rows, {len(self.current_data.columns)} columns")
 
     def render_data_preview(self):
@@ -262,7 +308,381 @@ class DataApp:
                 st.dataframe(col_info, width='stretch')
 
     def render_command_interface(self):
-        """Render the natural language command interface"""
+        """Render the appropriate interface based on system selection"""
+        if self.use_two_model_system:
+            self.render_analyst_chat_interface()
+        elif self.use_powerbi_mode:
+            self.render_powerbi_visualization_interface()
+        else:
+            self.render_traditional_command_interface()
+
+    def render_analyst_chat_interface(self):
+        """Render the 2-model analyst chatbot interface"""
+        st.header("💬 Chat with Your Data Analyst")
+        st.markdown("Ask questions about your data and get insights with visualizations - I'm your AI data analyst!")
+
+        if not self.two_model_system:
+            st.warning("⚠️ Please enter your OpenAI API key to enable the AI analyst.")
+            return
+
+        # Show initial question suggestions
+        if self.current_data is not None:
+            try:
+                initial_questions = self.two_model_system.suggest_initial_questions()
+                if initial_questions and initial_questions[0] != "Please upload your data first.":
+                    st.markdown("**💡 Suggested questions to get started:**")
+
+                    cols = st.columns(2)
+                    for i, question in enumerate(initial_questions[:4]):
+                        with cols[i % 2]:
+                            if st.button(f"💭 {question}", key=f"suggestion_q_{i}", width='stretch'):
+                                # Process the suggested question
+                                self.process_analyst_chat(question)
+                                st.rerun()
+
+                    st.markdown("---")
+            except Exception as e:
+                st.info("💡 Upload data to see personalized question suggestions")
+
+        # Chat input
+        with st.form("analyst_chat_form", clear_on_submit=True):
+            user_question = st.text_area(
+                "Ask your data analyst:",
+                placeholder="e.g., 'How did our revenue perform last quarter?' or 'Which products are driving growth?'",
+                height=80,
+                key="analyst_question"
+            )
+
+            col1, col2 = st.columns([4, 1])
+            with col1:
+                submitted = st.form_submit_button("🔍 Ask Analyst", type="primary", width='stretch')
+            with col2:
+                if st.form_submit_button("🗑️ Clear Chat", width='stretch'):
+                    if self.two_model_system:
+                        self.two_model_system.reset_conversation()
+                    if 'chat_history' in st.session_state:
+                        del st.session_state['chat_history']
+                    st.success("Chat cleared!")
+                    st.rerun()
+
+            if submitted and user_question:
+                self.process_analyst_chat(user_question)
+
+    def process_analyst_chat(self, user_question: str):
+        """Process user question through the 2-model analyst system"""
+        try:
+            with st.spinner("🤖 Your data analyst is thinking..."):
+                chat_result = self.two_model_system.chat_with_analyst(user_question)
+
+            if chat_result['success']:
+                # Initialize chat history if not exists
+                if 'chat_history' not in st.session_state:
+                    st.session_state.chat_history = []
+
+                # Add to chat history
+                st.session_state.chat_history.append({
+                    'user': user_question,
+                    'analyst': chat_result['response'],
+                    'visualizations': chat_result.get('visualizations', []),
+                    'follow_ups': chat_result.get('follow_up_suggestions', [])
+                })
+
+                st.success("✅ Analysis complete!")
+                st.rerun()
+            else:
+                st.error(f"❌ Analyst Error: {chat_result.get('response', 'Unknown error')}")
+
+        except Exception as e:
+            st.error(f"Error in analyst chat: {str(e)}")
+
+    def display_chat_history(self):
+        """Display the chat history with the analyst"""
+        if 'chat_history' not in st.session_state or not st.session_state.chat_history:
+            return
+
+        st.header("💬 Conversation with Data Analyst")
+
+        for i, chat in enumerate(st.session_state.chat_history):
+            # User question
+            with st.chat_message("user"):
+                st.write(chat['user'])
+
+            # Analyst response
+            with st.chat_message("assistant"):
+                st.write(chat['analyst'])
+
+                # Show visualizations
+                if chat.get('visualizations'):
+                    st.subheader("📊 Visualizations")
+                    for viz in chat['visualizations']:
+                        st.plotly_chart(viz['chart'], width='stretch', key=f"chat_viz_{i}_{hash(str(viz))}")
+
+                # Show follow-up suggestions
+                if chat.get('follow_ups'):
+                    st.markdown("**💡 Follow-up questions:**")
+                    cols = st.columns(min(len(chat['follow_ups']), 2))
+                    for j, follow_up in enumerate(chat['follow_ups'][:2]):
+                        with cols[j % 2]:
+                            if st.button(f"❓ {follow_up}", key=f"followup_{i}_{j}"):
+                                self.process_analyst_chat(follow_up)
+                                st.rerun()
+
+            st.divider()
+
+    def render_powerbi_visualization_interface(self):
+        """Render Power BI style direct visualization interface"""
+        st.header("📊 Create Visualizations - Power BI Style")
+        st.markdown("**Direct visualization creation** - Select your data and chart type to create instant visuals")
+
+        if self.current_data is None:
+            st.warning("⚠️ Please upload data first to create visualizations")
+            return
+
+        # Get column information
+        numeric_cols = self.current_data.select_dtypes(include=['number']).columns.tolist()
+        categorical_cols = self.current_data.select_dtypes(include=['object']).columns.tolist()
+        date_cols = self.current_data.select_dtypes(include=['datetime64']).columns.tolist()
+
+        # Chart type selector
+        st.subheader("📈 Select Chart Type")
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            if st.button("📊 Bar Chart", key="powerbi_bar", width='stretch', type="primary"):
+                st.session_state['powerbi_chart_type'] = 'bar'
+                st.rerun()
+
+        with col2:
+            if st.button("📈 Line Chart", key="powerbi_line", width='stretch'):
+                st.session_state['powerbi_chart_type'] = 'line'
+                st.rerun()
+
+        with col3:
+            if st.button("🔵 Scatter Plot", key="powerbi_scatter", width='stretch'):
+                st.session_state['powerbi_chart_type'] = 'scatter'
+                st.rerun()
+
+        with col4:
+            if st.button("🥧 Pie Chart", key="powerbi_pie", width='stretch'):
+                st.session_state['powerbi_chart_type'] = 'pie'
+                st.rerun()
+
+        # Additional chart types
+        col5, col6, col7, col8 = st.columns(4)
+
+        with col5:
+            if st.button("📦 Box Plot", key="powerbi_box", width='stretch'):
+                st.session_state['powerbi_chart_type'] = 'box'
+                st.rerun()
+
+        with col6:
+            if st.button("🔥 Heatmap", key="powerbi_heatmap", width='stretch'):
+                st.session_state['powerbi_chart_type'] = 'heatmap'
+                st.rerun()
+
+        with col7:
+            if st.button("📊 Histogram", key="powerbi_histogram", width='stretch'):
+                st.session_state['powerbi_chart_type'] = 'histogram'
+                st.rerun()
+
+        with col8:
+            if st.button("🔄 Clear All", key="powerbi_clear", width='stretch'):
+                if 'powerbi_chart_type' in st.session_state:
+                    del st.session_state['powerbi_chart_type']
+                if 'powerbi_charts' in st.session_state:
+                    del st.session_state['powerbi_charts']
+                st.rerun()
+
+        # Chart configuration
+        if 'powerbi_chart_type' in st.session_state:
+            self.render_powerbi_chart_config(st.session_state['powerbi_chart_type'],
+                                           numeric_cols, categorical_cols, date_cols)
+
+        # Display created charts
+        if 'powerbi_charts' in st.session_state and st.session_state['powerbi_charts']:
+            st.header("📊 Your Visualizations")
+            for i, chart_info in enumerate(st.session_state['powerbi_charts']):
+                st.subheader(f"{chart_info['title']}")
+                st.plotly_chart(chart_info['chart'], width='stretch', key=f"powerbi_chart_{i}")
+
+                # Add download button for each chart
+                chart_html = chart_info['chart'].to_html(include_plotlyjs='cdn')
+                st.download_button(
+                    label=f"📥 Download {chart_info['title']}",
+                    data=chart_html,
+                    file_name=f"{chart_info['title'].replace(' ', '_')}.html",
+                    mime="text/html",
+                    key=f"download_chart_{i}"
+                )
+
+    def render_powerbi_chart_config(self, chart_type: str, numeric_cols: List[str],
+                                  categorical_cols: List[str], date_cols: List[str]):
+        """Render chart configuration interface for Power BI style"""
+
+        st.subheader(f"⚙️ Configure {chart_type.title()} Chart")
+
+        with st.form(f"powerbi_config_{chart_type}"):
+            config = {}
+
+            if chart_type == 'bar':
+                config['x'] = st.selectbox("X-axis (Categories)", categorical_cols + date_cols + numeric_cols)
+                config['y'] = st.selectbox("Y-axis (Values)", numeric_cols)
+                if categorical_cols:
+                    config['color'] = st.selectbox("Color by (Optional)", ['None'] + categorical_cols)
+
+            elif chart_type == 'line':
+                config['x'] = st.selectbox("X-axis", date_cols + numeric_cols)
+                config['y'] = st.selectbox("Y-axis", numeric_cols)
+                if categorical_cols:
+                    config['color'] = st.selectbox("Group by (Optional)", ['None'] + categorical_cols)
+
+            elif chart_type == 'scatter':
+                config['x'] = st.selectbox("X-axis", numeric_cols)
+                config['y'] = st.selectbox("Y-axis", [col for col in numeric_cols if col != config.get('x')])
+                if categorical_cols:
+                    config['color'] = st.selectbox("Color by (Optional)", ['None'] + categorical_cols)
+                config['size'] = st.selectbox("Size by (Optional)", ['None'] + numeric_cols)
+
+            elif chart_type == 'pie':
+                config['labels'] = st.selectbox("Categories", categorical_cols)
+                config['values'] = st.selectbox("Values (Optional)", ['Count'] + numeric_cols)
+
+            elif chart_type == 'box':
+                config['y'] = st.selectbox("Values", numeric_cols)
+                config['x'] = st.selectbox("Group by", categorical_cols)
+
+            elif chart_type == 'histogram':
+                config['x'] = st.selectbox("Column", numeric_cols)
+                config['bins'] = st.slider("Number of bins", 10, 100, 30)
+                if categorical_cols:
+                    config['color'] = st.selectbox("Group by (Optional)", ['None'] + categorical_cols)
+
+            elif chart_type == 'heatmap':
+                if len(numeric_cols) >= 2:
+                    config['columns'] = st.multiselect("Select columns", numeric_cols, default=numeric_cols[:5])
+
+            # Chart customization
+            st.subheader("🎨 Customization")
+            config['title'] = st.text_input("Chart Title", value=f"{chart_type.title()} Chart")
+            config['height'] = st.slider("Chart Height", 300, 800, 500)
+
+            # Create chart button
+            if st.form_submit_button("🎨 Create Visualization", type="primary"):
+                chart = self.create_powerbi_chart(chart_type, config)
+                if chart:
+                    # Store chart in session state
+                    if 'powerbi_charts' not in st.session_state:
+                        st.session_state.powerbi_charts = []
+
+                    st.session_state.powerbi_charts.append({
+                        'chart': chart,
+                        'title': config.get('title', f"{chart_type.title()} Chart"),
+                        'type': chart_type
+                    })
+
+                    st.success(f"✅ {config.get('title', chart_type.title())} created successfully!")
+                    st.rerun()
+
+    def create_powerbi_chart(self, chart_type: str, config: Dict[str, Any]):
+        """Create Power BI style chart based on configuration"""
+        try:
+            # Clean config
+            clean_config = {k: v for k, v in config.items() if v and v != 'None'}
+
+            if chart_type == 'bar':
+                fig = px.bar(
+                    self.current_data,
+                    x=clean_config['x'],
+                    y=clean_config['y'],
+                    color=clean_config.get('color'),
+                    title=clean_config.get('title', 'Bar Chart'),
+                    template="plotly_white"
+                )
+
+            elif chart_type == 'line':
+                fig = px.line(
+                    self.current_data,
+                    x=clean_config['x'],
+                    y=clean_config['y'],
+                    color=clean_config.get('color'),
+                    title=clean_config.get('title', 'Line Chart'),
+                    template="plotly_white",
+                    markers=True
+                )
+
+            elif chart_type == 'scatter':
+                fig = px.scatter(
+                    self.current_data,
+                    x=clean_config['x'],
+                    y=clean_config['y'],
+                    color=clean_config.get('color'),
+                    size=clean_config.get('size'),
+                    title=clean_config.get('title', 'Scatter Plot'),
+                    template="plotly_white"
+                )
+
+            elif chart_type == 'pie':
+                if clean_config.get('values') == 'Count':
+                    # Count of categories
+                    pie_data = self.current_data[clean_config['labels']].value_counts()
+                    fig = px.pie(
+                        values=pie_data.values,
+                        names=pie_data.index,
+                        title=clean_config.get('title', 'Pie Chart'),
+                        template="plotly_white"
+                    )
+                else:
+                    fig = px.pie(
+                        self.current_data,
+                        values=clean_config.get('values'),
+                        names=clean_config['labels'],
+                        title=clean_config.get('title', 'Pie Chart'),
+                        template="plotly_white"
+                    )
+
+            elif chart_type == 'box':
+                fig = px.box(
+                    self.current_data,
+                    x=clean_config.get('x'),
+                    y=clean_config['y'],
+                    title=clean_config.get('title', 'Box Plot'),
+                    template="plotly_white"
+                )
+
+            elif chart_type == 'histogram':
+                fig = px.histogram(
+                    self.current_data,
+                    x=clean_config['x'],
+                    color=clean_config.get('color'),
+                    nbins=clean_config.get('bins', 30),
+                    title=clean_config.get('title', 'Histogram'),
+                    template="plotly_white"
+                )
+
+            elif chart_type == 'heatmap':
+                columns = clean_config.get('columns', [])
+                if columns:
+                    corr_matrix = self.current_data[columns].corr()
+                    fig = px.imshow(
+                        corr_matrix,
+                        text_auto=True,
+                        aspect="auto",
+                        title=clean_config.get('title', 'Correlation Heatmap'),
+                        template="plotly_white"
+                    )
+
+            # Apply height
+            fig.update_layout(height=clean_config.get('height', 500))
+
+            return fig
+
+        except Exception as e:
+            st.error(f"❌ Error creating {chart_type} chart: {str(e)}")
+            return None
+
+    def render_traditional_command_interface(self):
+        """Render the traditional natural language command interface"""
         st.header("💬 Natural Language Commands")
 
         # Generate and display suggestions first
@@ -664,10 +1084,17 @@ class DataApp:
             self.render_data_preview()
             self.render_command_interface()
 
-            # Display any stored results
-            if st.session_state.last_result is not None:
-                self.display_results(st.session_state.last_result)
-            # Sandbox section removed - using agentic workflow only
+            # Display appropriate results based on system
+            if self.use_two_model_system:
+                # Display chat history for 2-model system
+                self.display_chat_history()
+            elif self.use_powerbi_mode:
+                # Power BI mode displays charts directly in the interface
+                pass
+            else:
+                # Display traditional results
+                if st.session_state.last_result is not None:
+                    self.display_results(st.session_state.last_result)
         else:
             st.info("👆 Please upload a CSV file or load sample data from the sidebar to get started!")
 

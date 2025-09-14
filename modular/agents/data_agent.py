@@ -293,27 +293,64 @@ class DataAnalysisAgent(BaseAgent):
                 top_values = df[column].value_counts().head(n)
                 top_data = df[df[column].isin(top_values.index)]
 
+            # Add more specific business context
+            context_info = f"Top {n} records by {column}"
+            if pd.api.types.is_numeric_dtype(df[column]):
+                max_val = top_data[column].max()
+                min_val = top_data[column].min()
+                context_info += f" (range: {min_val:.1f} to {max_val:.1f})"
+
+                # Add quarterly/time context if date columns exist
+                date_cols = df.select_dtypes(include=['datetime64']).columns
+                if len(date_cols) > 0:
+                    date_col = date_cols[0]
+                    if date_col in top_data.columns:
+                        # Get time period info
+                        try:
+                            latest_date = top_data[date_col].max()
+                            earliest_date = top_data[date_col].min()
+                            context_info += f" (time period: {earliest_date.strftime('%Y-%m') if hasattr(earliest_date, 'strftime') else str(earliest_date)} to {latest_date.strftime('%Y-%m') if hasattr(latest_date, 'strftime') else str(latest_date)})"
+                        except:
+                            pass
+
             return {
                 'data': top_data,
-                'operation_details': f"Top {n} records by {column}"
+                'operation_details': context_info
             }
 
         return {'data': df.head(n), 'operation_details': f"Top {n} records"}
 
     def correlation_analysis(self, df: pd.DataFrame, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Perform correlation analysis"""
+        """Perform detailed correlation analysis with specific insights"""
         numeric_df = df.select_dtypes(include=['number'])
 
         if len(numeric_df.columns) >= 2:
             correlation_matrix = numeric_df.corr()
+
+            # Find strongest correlations
+            strongest_correlations = []
+            for i in range(len(correlation_matrix.columns)):
+                for j in range(i+1, len(correlation_matrix.columns)):
+                    col1 = correlation_matrix.columns[i]
+                    col2 = correlation_matrix.columns[j]
+                    corr_val = correlation_matrix.iloc[i, j]
+                    if abs(corr_val) > 0.5:  # Strong correlation threshold
+                        strongest_correlations.append(f"{col1} vs {col2}: {corr_val:.3f}")
+
+            correlation_details = f"Analyzed {len(numeric_df.columns)} numeric columns"
+            if strongest_correlations:
+                correlation_details += f". Strong relationships found: {'; '.join(strongest_correlations[:3])}"
+            else:
+                correlation_details += ". No strong correlations (>0.5) detected"
+
             return {
                 'data': correlation_matrix,
-                'operation_details': "Correlation analysis of numeric columns"
+                'operation_details': correlation_details
             }
 
         return {
             'data': pd.DataFrame({'message': ['Not enough numeric columns for correlation']}),
-            'operation_details': "Insufficient numeric data"
+            'operation_details': f"Need at least 2 numeric columns. Found: {list(numeric_df.columns)}"
         }
 
     def seasonality_analysis(self, df: pd.DataFrame, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -382,18 +419,48 @@ class DataAnalysisAgent(BaseAgent):
         }
 
     def generate_explanation(self, operation: Dict[str, Any], result: Dict[str, Any]) -> str:
-        """Generate human-readable explanation of the operation"""
+        """Generate detailed human-readable explanation with specific column impacts"""
         op_type = operation.get('type', 'unknown')
         details = result.get('operation_details', '')
+        data = result.get('data')
 
-        explanations = {
-            'filter': f"I filtered the data based on your criteria. {details}",
-            'sort': f"I sorted the data to show you the ordered results. {details}",
-            'group': f"I grouped the data to show aggregated insights. {details}",
-            'top': f"I found the top records based on your request. {details}",
-            'correlation': f"I calculated correlations between numeric variables. {details}",
-            'seasonality': f"I analyzed seasonal patterns in your data. {details}",
-            'statistics': f"I computed statistical summaries of your data. {details}"
+        # Get column names and specific insights
+        column_specific_info = ""
+        if data is not None and not data.empty:
+            key_columns = list(data.columns)[:3]  # Focus on first 3 columns
+
+            # Add specific column information
+            numeric_cols = data.select_dtypes(include=['number']).columns.tolist()
+            categorical_cols = data.select_dtypes(include=['object', 'string']).columns.tolist()
+
+            if numeric_cols:
+                top_numeric = numeric_cols[0]
+                try:
+                    if len(data) > 0:
+                        max_val = data[top_numeric].max()
+                        min_val = data[top_numeric].min()
+                        column_specific_info = f" The key numeric column '{top_numeric}' ranges from {min_val:.1f} to {max_val:.1f}."
+                except:
+                    column_specific_info = f" Focusing on numeric column '{top_numeric}'."
+
+            if categorical_cols and len(categorical_cols) > 0:
+                top_categorical = categorical_cols[0]
+                try:
+                    if len(data) > 0:
+                        unique_vals = data[top_categorical].nunique()
+                        top_category = data[top_categorical].value_counts().index[0] if len(data[top_categorical].value_counts()) > 0 else "N/A"
+                        column_specific_info += f" The categorical column '{top_categorical}' has {unique_vals} unique values, with '{top_category}' being most common."
+                except:
+                    column_specific_info += f" Analyzing categorical column '{top_categorical}'."
+
+        enhanced_explanations = {
+            'filter': f"I filtered the data based on your criteria ({details}), resulting in {len(data) if data is not None else 0} matching records.{column_specific_info}",
+            'sort': f"I sorted the data by priority ({details}), arranging {len(data) if data is not None else 0} records to show the most important first.{column_specific_info}",
+            'group': f"I grouped the data for aggregated analysis ({details}), creating {len(data) if data is not None else 0} summary groups.{column_specific_info}",
+            'top': f"I identified the top-performing records ({details}), showing {len(data) if data is not None else 0} highest-ranking entries.{column_specific_info}",
+            'correlation': f"I analyzed relationships between numeric variables ({details}), examining {len(data.columns) if data is not None else 0} correlation patterns.{column_specific_info}",
+            'seasonality': f"I analyzed time-based patterns ({details}), identifying {len(data) if data is not None else 0} seasonal data points.{column_specific_info}",
+            'statistics': f"I computed comprehensive statistical analysis ({details}), summarizing {len(data) if data is not None else 0} data points.{column_specific_info}"
         }
 
-        return explanations.get(op_type, f"I performed a {op_type} operation on your data. {details}")
+        return enhanced_explanations.get(op_type, f"I performed a detailed {op_type} analysis on your data ({details}), processing {len(data) if data is not None else 0} records.{column_specific_info}")

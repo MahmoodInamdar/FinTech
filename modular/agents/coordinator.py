@@ -165,23 +165,38 @@ class AgentCoordinator:
             else:
                 data_summary = {'message': 'No specific data returned from analysis'}
 
-            # Create AI insight prompt
+            # Create detailed AI insight prompt with column names and business context
             insight_prompt = f"""
-            You are a data analyst AI. Analyze the following data analysis results and provide clear, actionable insights in simple English.
+            You are a senior business data analyst. Analyze the following data analysis results and provide specific, actionable insights with concrete details.
 
             User's Question: "{command}"
             Analysis Type: {op_type}
             Original Dataset: {original_df.shape[0]} rows, {original_df.shape[1]} columns
+            Available Columns: {list(original_df.columns)}
 
             Results Summary: {data_summary}
 
-            Provide insights that include:
-            1. What the data shows (key findings)
-            2. What this means in business/practical terms
-            3. Any interesting patterns or outliers
-            4. Actionable recommendations
+            IMPORTANT: Provide insights that include:
+            1. **Specific Column Impact**: Name the exact columns that are most important and their values
+            2. **Business Context**: If columns relate to time (dates/quarters), products, regions, customers - explain the business impact
+            3. **Trend Analysis**: If there are time-based patterns, identify which periods/quarters/months were affected
+            4. **Root Cause Analysis**: Explain WHY these changes occurred (e.g., "Revenue dropped in Q2 because Product A sales decreased by 30%")
+            5. **Actionable Recommendations**: Specific steps to improve based on the column findings
 
-            Keep your response conversational and under 200 words. Focus on insights that would be valuable to a business user.
+            Format your response like this:
+            **Key Findings:**
+            - [Specific column name] showed [specific impact/change] affecting [business metric]
+
+            **Business Impact:**
+            - [Explain what this means for the business with specific examples]
+
+            **Root Causes:**
+            - [Why these changes happened - be specific about columns, time periods, products, etc.]
+
+            **Recommendations:**
+            - [Specific actionable steps based on the column analysis]
+
+            Use actual column names from the dataset and provide specific numbers/percentages when available. Keep response under 250 words but be specific and detailed.
             """
 
             # Generate AI insights
@@ -197,23 +212,70 @@ class AgentCoordinator:
             return self.generate_fallback_insights(command, data_result, original_df)
 
     def generate_fallback_insights(self, command: str, data_result: Dict[str, Any], original_df: pd.DataFrame) -> str:
-        """Generate simple fallback insights when AI fails"""
+        """Generate specific fallback insights when AI fails"""
         result_data = data_result.get('result', {}).get('data')
         operation = data_result.get('operation', {})
         op_type = operation.get('type', 'analysis')
 
+        # Get column information for more specific insights
+        numeric_cols = original_df.select_dtypes(include=['number']).columns.tolist()
+        categorical_cols = original_df.select_dtypes(include=['object', 'string']).columns.tolist()
+        date_cols = original_df.select_dtypes(include=['datetime64']).columns.tolist()
+
+        # Extract specific column insights
+        column_insights = []
+
         if result_data is not None and not result_data.empty:
+            # Get the most important columns from the results
+            important_cols = list(result_data.columns)[:3]  # Top 3 columns
+
+            for col in important_cols:
+                if col in numeric_cols:
+                    try:
+                        col_mean = result_data[col].mean()
+                        col_max = result_data[col].max()
+                        col_min = result_data[col].min()
+                        column_insights.append(f"**{col}**: Range {col_min:.1f} to {col_max:.1f} (avg: {col_mean:.1f})")
+                    except:
+                        column_insights.append(f"**{col}**: Key numeric factor in analysis")
+                elif col in categorical_cols:
+                    try:
+                        top_category = result_data[col].value_counts().index[0]
+                        category_count = result_data[col].value_counts().iloc[0]
+                        column_insights.append(f"**{col}**: Top category '{top_category}' ({category_count} records)")
+                    except:
+                        column_insights.append(f"**{col}**: Important categorical factor")
+
             insights = f"""
 **Key Findings from {op_type.title()} Analysis:**
 
-📊 **Data Overview:** Found {len(result_data)} records from your {op_type} analysis of {len(original_df)} total records.
+📊 **Specific Column Impact:**
+{chr(10).join(['- ' + insight for insight in column_insights[:3]])}
 
-📈 **What This Shows:** The {op_type} operation revealed patterns in your data that can help you understand {'relationships between variables' if op_type == 'correlation' else 'the distribution and trends' if op_type == 'statistics' else 'the top performers' if op_type == 'top' else 'how your data groups'}.
+📈 **Business Context:**
+- Analyzed {len(result_data)} key records from {len(original_df)} total entries
+- {'Time-based patterns detected' if date_cols else 'Cross-sectional analysis completed'}
+- {f'{len(numeric_cols)} numeric factors and {len(categorical_cols)} categorical factors examined' if numeric_cols or categorical_cols else 'Multi-dimensional analysis performed'}
 
-💡 **Next Steps:** Consider exploring related metrics or diving deeper into specific segments that show interesting patterns.
+🎯 **Actionable Insights:**
+- Focus on the {'top-performing categories' if op_type == 'top' else 'key relationships' if op_type == 'correlation' else 'statistical patterns'} identified
+- {'Monitor seasonal trends' if date_cols else 'Track performance across segments'} for better decision making
+- Investigate the highlighted {important_cols[0] if important_cols else 'factors'} for optimization opportunities
+
+💡 **Next Steps:** Drill down into {important_cols[0] if important_cols else 'key metrics'} and cross-reference with {'time periods' if date_cols else 'business segments'} for deeper insights.
             """
         else:
-            insights = f"Completed {op_type} analysis on your dataset. The operation processed {len(original_df)} records successfully."
+            insights = f"""
+**Analysis Summary:**
+Completed {op_type} analysis on your dataset with {len(original_df)} records across {len(original_df.columns)} columns.
+
+**Available Data:**
+- {len(numeric_cols)} numeric columns: {', '.join(numeric_cols[:3])}{'...' if len(numeric_cols) > 3 else ''}
+- {len(categorical_cols)} categorical columns: {', '.join(categorical_cols[:3])}{'...' if len(categorical_cols) > 3 else ''}
+{'- Time data available' if date_cols else ''}
+
+**Recommendation:** Try more specific queries like "show top 10 by [column]" or "correlation between [column1] and [column2]" for detailed insights.
+            """
 
         return insights.strip()
 

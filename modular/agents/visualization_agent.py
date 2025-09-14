@@ -392,37 +392,98 @@ class VisualizationAgent(BaseAgent):
         return fig
 
     def create_line_chart(self, df: pd.DataFrame, plan: Dict[str, Any]) -> go.Figure:
-        """Create line chart"""
+        """Create enhanced line chart with trend analysis"""
         x_col = plan.get('x')
         y_col = plan.get('y')
 
-        # Auto-select columns
+        # Auto-select columns with better logic
         if not x_col:
-            date_cols = df.select_dtypes(include=['datetime64']).columns
-            numeric_cols = df.select_dtypes(include=['number']).columns
-            x_col = date_cols[0] if len(date_cols) > 0 else (numeric_cols[0] if len(numeric_cols) > 0 else df.columns[0])
+            date_cols = df.select_dtypes(include=['datetime64']).columns.tolist()
+
+            # Try to detect date columns that aren't properly typed
+            if not date_cols:
+                for col in df.columns:
+                    if any(keyword in col.lower() for keyword in ['date', 'time', 'year', 'month']):
+                        try:
+                            df[col] = pd.to_datetime(df[col], errors='coerce')
+                            if not df[col].isna().all():
+                                date_cols.append(col)
+                                break
+                        except:
+                            continue
+
+            if date_cols:
+                x_col = date_cols[0]
+            else:
+                numeric_cols = df.select_dtypes(include=['number']).columns
+                x_col = numeric_cols[0] if len(numeric_cols) > 0 else df.columns[0]
 
         if not y_col:
-            numeric_cols = df.select_dtypes(include=['number']).columns
-            y_col = numeric_cols[0] if len(numeric_cols) > 0 else df.columns[1] if len(df.columns) > 1 else df.columns[0]
+            # Prioritize sales/revenue columns
+            numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+            sales_cols = [col for col in numeric_cols if any(keyword in col.lower() for keyword in ['sales', 'revenue', 'amount', 'value', 'income', 'profit'])]
 
-        # Sort by x column if it's a date
+            if sales_cols:
+                y_col = sales_cols[0]
+            elif numeric_cols:
+                y_col = numeric_cols[0]
+            else:
+                y_col = df.columns[1] if len(df.columns) > 1 else df.columns[0]
+
+        # Prepare data for visualization
         if pd.api.types.is_datetime64_any_dtype(df[x_col]):
             df_sorted = df.sort_values(x_col)
-        else:
-            df_sorted = df
 
+            # Add time-based aggregation if too many data points
+            if len(df_sorted) > 100:
+                df_sorted = df_sorted.set_index(x_col).resample('M')[y_col].sum().reset_index()
+        else:
+            df_sorted = df.sort_values(x_col) if x_col in df.columns else df
+
+        # Create the line chart
         fig = px.line(
             df_sorted,
             x=x_col,
             y=y_col,
-            title=f"{y_col.title()} over {x_col.title()}",
+            title=f"📈 {y_col.title()} Trends over {x_col.title()}",
             template="plotly_white",
             markers=True
         )
 
+        # Enhanced styling
         fig.update_traces(
-            hovertemplate=f"<b>{x_col}</b>: %{{x}}<br><b>{y_col}</b>: %{{y:,.2f}}<extra></extra>"
+            line=dict(width=3),
+            marker=dict(size=6),
+            hovertemplate=f"<b>{x_col}</b>: %{{x}}<br><b>{y_col}</b>: %{{y:,.0f}}<extra></extra>"
+        )
+
+        # Add trend line if it's a time series
+        if pd.api.types.is_datetime64_any_dtype(df_sorted[x_col]) and len(df_sorted) > 5:
+            # Add simple trend line
+            from sklearn.linear_model import LinearRegression
+            import numpy as np
+
+            try:
+                X = np.arange(len(df_sorted)).reshape(-1, 1)
+                y = df_sorted[y_col].values
+                lr = LinearRegression().fit(X, y)
+                trend = lr.predict(X)
+
+                fig.add_trace(go.Scatter(
+                    x=df_sorted[x_col],
+                    y=trend,
+                    mode='lines',
+                    name='Trend',
+                    line=dict(dash='dash', color='red', width=2),
+                    hovertemplate='<b>Trend</b>: %{y:,.0f}<extra></extra>'
+                ))
+            except:
+                pass  # Skip trend line if error
+
+        fig.update_layout(
+            height=400,
+            hovermode='x unified',
+            showlegend=True if 'Trend' in [trace.name for trace in fig.data] else False
         )
 
         return fig
